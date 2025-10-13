@@ -1,0 +1,128 @@
+name: Update MaxMind GeoLite2 Database
+
+on:
+  schedule:
+    # Run every Monday at 3 AM UTC (MaxMind updates their database weekly)
+    - cron: "0 3 * * 1"
+  workflow_dispatch: # Allow manual triggers
+
+jobs:
+  update-database:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download GeoLite2-City database
+        env:
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+        run: |
+          echo "Downloading GeoLite2-City database..."
+
+          if ! curl -f -L -o GeoLite2-City.tar.gz \
+            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"; then
+            echo "Error: Failed to download from MaxMind"
+            echo "Check that license key is valid and has not expired"
+            exit 1
+          fi
+
+          echo "Download complete"
+
+      - name: Extract database file
+        run: |
+          echo "Extracting database..."
+          tar -xzf GeoLite2-City.tar.gz
+
+          # Find the .mmdb file (it's in a dated subdirectory like GeoLite2-City_20231010/)
+          MMDB_FILE=$(find . -name "GeoLite2-City.mmdb" -type f | head -n 1)
+
+          if [ -z "$MMDB_FILE" ]; then
+            echo "Error: Could not find GeoLite2-City.mmdb in extracted archive"
+            exit 1
+          fi
+
+          # Move to predictable location
+          mv "$MMDB_FILE" GeoLite2-City.mmdb
+
+          echo "Database ready: $(ls -lh GeoLite2-City.mmdb)"
+
+      - name: Generate release info
+        id: release_info
+        run: |
+          # Generate release tag with date
+          RELEASE_TAG="v$(date +%Y.%m.%d)"
+          echo "tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+
+          # Get file info for release notes
+          FILE_SIZE=$(stat -c%s GeoLite2-City.mmdb)
+          FILE_SIZE_MB=$((FILE_SIZE / 1024 / 1024))
+          echo "size_mb=${FILE_SIZE_MB}" >> $GITHUB_OUTPUT
+
+          # Generate release body
+          cat > release_notes.md << EOF
+          # MaxMind GeoLite2-City Database Update
+
+          **Updated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          **File Size:** ${FILE_SIZE_MB} MB
+          **Edition:** GeoLite2-City
+
+          ## Download URL
+          \`\`\`
+          https://github.com/\${{ github.repository }}/releases/download/${RELEASE_TAG}/GeoLite2-City.mmdb
+          \`\`\`
+
+          ## Verification
+          \`\`\`bash
+          curl -L -o GeoLite2-City.mmdb https://github.com/\${{ github.repository }}/releases/download/${RELEASE_TAG}/GeoLite2-City.mmdb
+          \`\`\`
+
+          ---
+          *This database is updated weekly via automated workflow*
+          EOF
+
+          echo "Release notes generated"
+
+      - name: Delete old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get count of releases
+          RELEASE_COUNT=$(gh release list --limit 100 | wc -l)
+
+          if [ "$RELEASE_COUNT" -gt 0 ]; then
+            echo "Found ${RELEASE_COUNT} existing releases"
+            # Keep only the latest, delete all others
+            gh release list --limit 100 | tail -n +2 | cut -f1 | while read -r tag; do
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" --yes 2>/dev/null || true
+            done
+            echo "Old releases deleted"
+          else
+            echo "No existing releases to delete"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ steps.release_info.outputs.tag }} \
+            GeoLite2-City.mmdb \
+            --title "GeoLite2-City $(date +%Y-%m-%d)" \
+            --notes-file release_notes.md \
+            --latest
+
+      - name: Verify release
+        run: |
+          echo "✅ Release created successfully!"
+          echo ""
+          echo "Download URL:"
+          echo "https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/GeoLite2-City.mmdb"
+          echo ""
+          echo "Latest URL (always current):"
+          echo "https://github.com/${{ github.repository }}/releases/latest/download/GeoLite2-City.mmdb"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::MaxMind database update failed. Check workflow logs for details."
