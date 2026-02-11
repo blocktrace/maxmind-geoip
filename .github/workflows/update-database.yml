@@ -6,6 +6,9 @@ on:
     - cron: "0 3 * * 1"
   workflow_dispatch: # Allow manual triggers
 
+permissions:
+  contents: write
+
 jobs:
   update-database:
     runs-on: ubuntu-latest
