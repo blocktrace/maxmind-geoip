@@ -17,38 +17,49 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download GeoLite2-City database
+      - name: Download GeoLite2 databases
         env:
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
         run: |
-          echo "Downloading GeoLite2-City database..."
+          download_edition() {
+            local edition="$1"
+            echo "Downloading ${edition}..."
+            if ! curl -f -L -o "${edition}.tar.gz" \
+              "https://download.maxmind.com/app/geoip_download?edition_id=${edition}&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"; then
+              echo "Error: Failed to download ${edition} from MaxMind"
+              echo "Check that license key is valid and has not expired"
+              exit 1
+            fi
+          }
 
-          if ! curl -f -L -o GeoLite2-City.tar.gz \
-            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"; then
-            echo "Error: Failed to download from MaxMind"
-            echo "Check that license key is valid and has not expired"
-            exit 1
-          fi
+          download_edition "GeoLite2-City"
+          download_edition "GeoLite2-ASN"
 
-          echo "Download complete"
+          echo "Downloads complete"
 
-      - name: Extract database file
+      - name: Extract database files
         run: |
-          echo "Extracting database..."
-          tar -xzf GeoLite2-City.tar.gz
+          extract_mmdb() {
+            local edition="$1"
+            echo "Extracting ${edition}..."
+            tar -xzf "${edition}.tar.gz"
 
-          # Find the .mmdb file (it's in a dated subdirectory like GeoLite2-City_20231010/)
-          MMDB_FILE=$(find . -name "GeoLite2-City.mmdb" -type f | head -n 1)
+            # Find the .mmdb file (it's in a dated subdirectory like GeoLite2-City_20231010/)
+            local mmdb_file
+            mmdb_file=$(find . -name "${edition}.mmdb" -type f | head -n 1)
 
-          if [ -z "$MMDB_FILE" ]; then
-            echo "Error: Could not find GeoLite2-City.mmdb in extracted archive"
-            exit 1
-          fi
+            if [ -z "$mmdb_file" ]; then
+              echo "Error: Could not find ${edition}.mmdb in extracted archive"
+              exit 1
+            fi
 
-          # Move to predictable location
-          mv "$MMDB_FILE" GeoLite2-City.mmdb
+            # Move to predictable location
+            mv "$mmdb_file" "${edition}.mmdb"
+            echo "Database ready: $(ls -lh ${edition}.mmdb)"
+          }
 
-          echo "Database ready: $(ls -lh GeoLite2-City.mmdb)"
+          extract_mmdb "GeoLite2-City"
+          extract_mmdb "GeoLite2-ASN"
 
       - name: Generate release info
         id: release_info
@@ -58,30 +69,30 @@ jobs:
           echo "tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
 
           # Get file info for release notes
-          FILE_SIZE=$(stat -c%s GeoLite2-City.mmdb)
-          FILE_SIZE_MB=$((FILE_SIZE / 1024 / 1024))
-          echo "size_mb=${FILE_SIZE_MB}" >> $GITHUB_OUTPUT
+          CITY_SIZE_MB=$(( $(stat -c%s GeoLite2-City.mmdb) / 1024 / 1024 ))
+          ASN_SIZE_MB=$(( $(stat -c%s GeoLite2-ASN.mmdb) / 1024 / 1024 ))
 
           # Generate release body
           cat > release_notes.md << EOF
-          # MaxMind GeoLite2-City Database Update
+          # MaxMind GeoLite2 Database Update
 
           **Updated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          **File Size:** ${FILE_SIZE_MB} MB
-          **Edition:** GeoLite2-City
+          **Editions:** GeoLite2-City (${CITY_SIZE_MB} MB), GeoLite2-ASN (${ASN_SIZE_MB} MB)
 
-          ## Download URL
+          ## Download URLs
           \`\`\`
           https://github.com/\${{ github.repository }}/releases/download/${RELEASE_TAG}/GeoLite2-City.mmdb
+          https://github.com/\${{ github.repository }}/releases/download/${RELEASE_TAG}/GeoLite2-ASN.mmdb
           \`\`\`
 
-          ## Verification
+          ## Latest (always current)
           \`\`\`bash
-          curl -L -o GeoLite2-City.mmdb https://github.com/\${{ github.repository }}/releases/download/${RELEASE_TAG}/GeoLite2-City.mmdb
+          curl -L -o GeoLite2-City.mmdb https://github.com/\${{ github.repository }}/releases/latest/download/GeoLite2-City.mmdb
+          curl -L -o GeoLite2-ASN.mmdb  https://github.com/\${{ github.repository }}/releases/latest/download/GeoLite2-ASN.mmdb
           \`\`\`
 
           ---
-          *This database is updated weekly via automated workflow*
+          *These databases are updated weekly via automated workflow*
           EOF
 
           echo "Release notes generated"
@@ -111,7 +122,8 @@ jobs:
         run: |
           gh release create ${{ steps.release_info.outputs.tag }} \
             GeoLite2-City.mmdb \
-            --title "GeoLite2-City $(date +%Y-%m-%d)" \
+            GeoLite2-ASN.mmdb \
+            --title "GeoLite2 $(date +%Y-%m-%d)" \
             --notes-file release_notes.md \
             --latest
 
@@ -119,11 +131,13 @@ jobs:
         run: |
           echo "✅ Release created successfully!"
           echo ""
-          echo "Download URL:"
+          echo "Download URLs:"
           echo "https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/GeoLite2-City.mmdb"
+          echo "https://github.com/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/GeoLite2-ASN.mmdb"
           echo ""
-          echo "Latest URL (always current):"
+          echo "Latest URLs (always current):"
           echo "https://github.com/${{ github.repository }}/releases/latest/download/GeoLite2-City.mmdb"
+          echo "https://github.com/${{ github.repository }}/releases/latest/download/GeoLite2-ASN.mmdb"
 
       - name: Notify on failure
         if: failure()
